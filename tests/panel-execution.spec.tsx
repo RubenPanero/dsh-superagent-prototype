@@ -3,6 +3,7 @@
 import { act } from 'react'
 import { expect, it } from 'vitest'
 import { en, zh } from '../src/client/locales.ts'
+import { markdown, preview } from '../src/app/views/text.ts'
 import { usePanel, mount, remount, all, find, tab, click, type, text, field, at } from './fixtures/panel.tsx'
 import { MEMBER, server, ticketSummary, threadSummary } from './fixtures/panel-server.ts'
 
@@ -73,6 +74,32 @@ it('shows a Ticket with its stage, its Mandate details with the Trigger and Deci
     'DSH_SUPERAGENT_GITHUB_NUMBER—'])
   await click(document.querySelector<HTMLElement>('.dt-trigger-link')!)
   expect(tab(zh['tab.trigger']).getAttribute('aria-selected')).toBe('true')
+})
+
+it('renders hostile question and input text without creating HTML or executable links', async () => {
+  const hostile = '<script>window.__dshXss = true</script><img src=x onerror="window.__dshXss = true">'
+    + '<svg onload="window.__dshXss = true"></svg><!-- hidden -->'
+    + '\n[jump](javascript:alert(1)) [data](data:text/html,boom)'
+    + '\n**safe bold** [docs](https://example.com/docs)'
+  const ticket = server.ticketDetails.t1!
+  // A raw question bypasses the backend formatter: React must remain the HTML safety boundary.
+  server.ticketDetails.t1 = { ...ticket, title: preview(hostile), stage: 'person', action: 'answer',
+    attention: { id: 'q1', question: hostile },
+    inputs: [{ id: 'hostile', kind: 'text', at: '2026-09-22T00:06:00Z', delivered: false, text: markdown(hostile) }] }
+  await mount()
+  await click(all('.dt-open').find(button => button.textContent === '修复回归')!)
+  const question = document.querySelector('.dt-banner .dt-md')!
+  const input = document.querySelector('.dt-row-quote .dt-md')!
+  expect(question.textContent).toContain('<script>window.__dshXss = true</script>')
+  expect(input.textContent).toContain('window.__dshXss = true')
+  expect(input.textContent).not.toContain('<script>')
+  expect(document.querySelector('.dt-page-title h2')?.textContent).toBe(preview(hostile))
+  for (const rendered of [question, input]) {
+    expect(rendered.querySelector('script, img, svg, iframe, [onerror], [onload]')).toBeNull()
+    expect(rendered.querySelector('strong')?.textContent).toBe('safe bold')
+    expect([...rendered.querySelectorAll('a')].map(link => link.getAttribute('href'))).toEqual(['https://example.com/docs'])
+    expect(rendered.textContent).toContain('[jump](javascript:alert(1))')
+  }
 })
 
 it('reports a missing Ticket instead of rendering an empty page', async () => {

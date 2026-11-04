@@ -193,6 +193,24 @@ it('sends text without HTML, entity-encoded tags included, and with images named
   expect(plain('[the docs](https://example.com) and `code` &amp; more')).toBe('the docs and code & more')
 })
 
+it.each([1, 2, 3, 8])('removes tags and comments reconstructed by %i layers of stripping', depth => {
+  let input = '<!-- hidden --><script>alert(1)</script>'
+  for (let layer = 0; layer < depth; layer++) input = input.replaceAll('<', '<<x>')
+  expect(plain(input)).toBe('alert(1)')
+  expect(markdown(input)).toBe('alert(1)')
+})
+
+it('removes recursively encoded tags and comments without losing comparisons or Markdown', () => {
+  const input = '&amp;lt;!-- hidden --&amp;gt;**Fix** &amp;lt;script&amp;gt;alert(1)&amp;lt;/script&amp;gt;'
+  expect(plain(input)).toBe('Fix alert(1)')
+  expect(markdown(input)).toBe('**Fix** alert(1)')
+  expect(plain('2 < 3 and 5 > 4')).toBe('2 < 3 and 5 > 4')
+})
+
+it('removes tags reconstructed while reducing Markdown links to plain text', () => {
+  expect(plain('<[script](https://example.com)>alert(1)</[script](https://example.com)>')).toBe('alert(1)')
+})
+
 it('words each settings save by what it changed from the one before, and nothing after a gap in the history', () => {
   const host = views()
   const first = store.settings()

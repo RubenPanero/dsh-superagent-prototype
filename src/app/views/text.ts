@@ -1,15 +1,24 @@
 /** Text sanitization and formatting helpers for plain-text previews and HTML-free Markdown in views. */
 const ENTITIES: Record<string, string> = { amp: '&', lt: '<', gt: '>', quot: '"', '#39': "'", nbsp: ' ' }
-/** Strips HTML comments and tags, decodes basic entities, and strips again to catch entity-encoded tags. */
-const withoutHtml = (text: string) => text.replace(/<!--[\s\S]*?-->/g, '').replace(/<\/?[a-zA-Z][^>]*>/g, '')
-  .replace(/&(amp|lt|gt|quot|#39|nbsp);/g, (_match, name: string) => ENTITIES[name]!)
-  .replace(/<!--[\s\S]*?-->/g, '').replace(/<\/?[a-zA-Z][^>]*>/g, '')
+/** Presentation-only HTML removal; the client must still render the result as text, never raw HTML. */
+function withoutHtml(text: string): string {
+  let previous: string
+  // Each change shortens the string. Repeat until stripping and entity decoding cannot reconstruct another tag or comment.
+  do {
+    previous = text
+    text = text.replace(/<!--[\s\S]*?-->/g, '').replace(/<\/?[a-zA-Z][^>]*>/g, '')
+      .replace(/&(amp|lt|gt|quot|#39|nbsp);/g, (_match, name: string) => ENTITIES[name]!)
+  } while (text !== previous)
+  return text
+}
 export function plain(text: string, lines = false): string {
   const result = withoutHtml(text)
     .replace(/!\[[^\]]*\]\([^)]*\)|\[Image: [^\]]*\]/g, '[image]')
     .replace(/\[([^\]]+)\]\((?:[^)]*)\)/g, '$1')
     .replace(/^#{1,6}\s+/gm, '').replace(/^\s*[-*]\s+/gm, lines ? '• ' : '').replace(/(\*\*|__|`)/g, '')
-  return lines ? result.replace(/[ \t]+/g, ' ').replace(/\n{3,}/g, '\n\n').trim() : result.replace(/\s+/g, ' ').trim()
+  // Reducing Markdown links to labels can also reconstruct HTML.
+  const clean = withoutHtml(result)
+  return lines ? clean.replace(/[ \t]+/g, ' ').replace(/\n{3,}/g, '\n\n').trim() : clean.replace(/\s+/g, ' ').trim()
 }
 export const markdown = (text: string): string => withoutHtml(text).replace(/!\[[^\]]*\]\([^)]*\)|\[Image: [^\]]*\]/g, '[image]').trim()
 const scalar = (value: unknown): value is string | number | boolean | null => value === null || typeof value !== 'object'
