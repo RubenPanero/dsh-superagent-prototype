@@ -6,8 +6,17 @@ function withoutHtml(text: string): string {
   // Each change shortens the string. Repeat until stripping and entity decoding cannot reconstruct another tag or comment.
   do {
     previous = text
-    text = text.replace(/<!--[\s\S]*?-->/g, '').replace(/<\/?[a-zA-Z][^>]*>/g, '')
-      .replace(/&(amp|lt|gt|quot|#39|nbsp);/g, (_match, name: string) => ENTITIES[name]!)
+    let stripped: string
+    // Keep each replacement in its own fixed-point loop so CodeQL can verify the feedback into its receiver.
+    do {
+      stripped = text
+      text = text.replace(/<!--[\s\S]*?-->/g, '')
+    } while (text !== stripped)
+    do {
+      stripped = text
+      text = text.replace(/<\/?[a-zA-Z][^>]*>/g, '')
+    } while (text !== stripped)
+    text = text.replace(/&(amp|lt|gt|quot|#39|nbsp);/g, (_match, name: string) => ENTITIES[name]!)
   } while (text !== previous)
   return text
 }
