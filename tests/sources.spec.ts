@@ -1043,7 +1043,7 @@ describe('feishu event consumer', () => {
    * A bot CLI whose `event consume` behaves as `mode` says: `never` gets ready, `warn` warns once ready, `ready` stays up,
    * and `flaky` exits after its first ready. It records each run and the PID of the latest.
    */
-  function cli(mode: 'never' | 'warn' | 'ready' | 'flaky' | 'events' | 'late'): string {
+  function cli(mode: 'never' | 'warn' | 'warn-first' | 'ready' | 'flaky' | 'events' | 'late'): string {
     const path = join(dir, 'lark-bot')
     writeFileSync(path, `#!/bin/sh
   [ "$1" = event ] || { echo '{"ok":true,"data":{}}'; exit 0; }
@@ -1051,6 +1051,7 @@ describe('feishu event consumer', () => {
   case ${mode} in
     never) exec sleep 60 ;;
     warn) echo '[event] ready' >&2; echo 'WARN the connection was reset' >&2; exec sleep 60 ;;
+    warn-first) printf 'WARN the connection was reset\\n[event] ready\\n' >&2; exec sleep 60 ;;
     ready) echo '[event] ready' >&2; exec sleep 60 ;;
     flaky) echo '[event] ready' >&2; [ "$n" -gt 1 ] && exec sleep 60; exit 1 ;;
     events) echo '[event] ready' >&2; cat '${dir}/events'; touch '${dir}/printed'; exec sleep 60 ;;
@@ -1155,8 +1156,8 @@ describe('feishu event consumer', () => {
     expect(alive(pid)).toBe(false)
     controller.abort(); await running; store.close()
   }, 20_000)
-  it('reports a warning the consumer prints as an error', async () => {
-    const { ctx, health, store } = consumerSource(cli('warn'))
+  it.each(['warn', 'warn-first'] as const)('keeps a consumer warning visible with readiness order %s', async mode => {
+    const { ctx, health, store } = consumerSource(cli(mode))
     running = runFeishu(ctx, controller.signal)
     await vi.waitFor(() => expect(health.feishu).toMatchObject({ state: 'error', detail: 'WARN the connection was reset' }), until)
     controller.abort(); await running; store.close()

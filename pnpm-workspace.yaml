@@ -1,0 +1,7 @@
+---
+# Work around Dependabot's no-op transitive updates with pnpm 11.7.0.
+# See docs/security-review.md. Only override vulnerable version ranges.
+overrides:
+  'source-map-js@<1.2.2': 1.2.2
+  'undici@>=7.0.0 <7.30.1': 7.30.1
+  'vite@>=8.2.0 <8.2.4': 8.2.4

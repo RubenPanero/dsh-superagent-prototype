@@ -151,7 +151,8 @@ describe('ticket directory check', () => {
   it('fails when git cannot read the repository\'s configuration, instead of passing it', async () => {
     await git('init', '-q', 'repo')
     writeFileSync(join(dir, 'repo', '.git', 'config'), '[core\n')
-    await expect(check('repo')).rejects.toThrow(/bad config/)
+    // Git localizes its diagnostics; the failure status and config path do not depend on the locale.
+    await expect(check('repo')).rejects.toMatchObject({ exitCode: 128, message: expect.stringContaining('.git/config') })
   })
   it('reports a failed command\'s exit status', async () => {
     const failing = ['sh', '-c', 'echo nope >&2; exit 3']
