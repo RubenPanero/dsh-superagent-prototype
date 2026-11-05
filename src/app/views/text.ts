@@ -16,7 +16,7 @@ function withoutHtml(text: string): string {
       stripped = text
       text = text.replace(/<\/?[a-zA-Z][^>]*>/g, '')
     } while (text !== stripped)
-    text = text.replace(/&(amp|lt|gt|quot|#39|nbsp);/g, (_match, name: string) => ENTITIES[name]!)
+    text = text.replace(/&(amp|lt|gt|quot|#39|nbsp);/g, (match, name: string) => ENTITIES[name] ?? match)
   } while (text !== previous)
   return text
 }
@@ -46,8 +46,8 @@ function jsonLines(value: unknown): string[] {
 /** Formats JSON payloads (or `label: <JSON>` notices) as key-value lines; returns non-JSON text unchanged. */
 export function readable(text: string): string {
   const match = /^(?:([^\n{[]{1,200}): )?(\{[\s\S]*\}|\[[\s\S]*\])$/.exec(text.trim())
-  if (!match) return text
-  try { return [...match[1] ? [match[1]] : [], ...jsonLines(JSON.parse(match[2]!))].join('\n') }
+  if (!match?.[2]) return text
+  try { return [...match[1] ? [match[1]] : [], ...jsonLines(JSON.parse(match[2]))].join('\n') }
   catch (error) { void error /* Text that only looks like JSON is shown as written. */; return text }
 }
 export function preview(text: string, length = 160): string { return plain(readable(text)).slice(0, length) }
