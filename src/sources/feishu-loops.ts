@@ -73,6 +73,7 @@ async function consume(ctx: SourceContext, signal: AbortSignal): Promise<void> {
       LARKSUITE_CLI_NO_SKILLS_NOTIFIER: '1' } })
   const stdout = createInterface({ input: child.stdout }); const stderr = createInterface({ input: child.stderr })
   let chain = Promise.resolve(); let diagnostic = ''; let ready = false
+  let reportedError = false
   const stop = (): void => { child.stdin.end(); child.kill('SIGTERM') }
   signal.addEventListener('abort', stop, { once: true })
   const timeout = setTimeout(() => { diagnostic = 'Feishu event consumer did not become ready within 45 seconds'; stop() }, 45_000)
@@ -80,20 +81,29 @@ async function consume(ctx: SourceContext, signal: AbortSignal): Promise<void> {
     diagnostic = line.slice(0, 4000)
     if (line.startsWith('[event] ready')) {
       ready = true; clearTimeout(timeout)
-      ctx.report('feishu', { state: 'ready', detail: 'Listening for bot events', at: new Date().toISOString() })
-    } else if (/WARN|drop|error/.test(line)) ctx.report('feishu', { state: 'error', detail: diagnostic })
+      // stdout and stderr can arrive out of order; startup readiness must not erase an error from this run.
+      if (!reportedError) ctx.report('feishu', { state: 'ready', detail: 'Listening for bot events', at: new Date().toISOString() })
+    } else if (/WARN|drop|error/.test(line)) {
+      reportedError = true
+      ctx.report('feishu', { state: 'error', detail: diagnostic })
+    }
   })
   stdout.on('line', (line: string) => {
     chain = chain.then(async () => {
-      if (line.length > 1_048_576) throw new Error('Feishu event exceeds 1 MiB')
-      const trigger = feishuTrigger(JSON.parse(line), bot(ctx).botId, bot(ctx).appId)
-      // Events already read when the Source is disabled are dropped; the consumer stops shortly after.
-      if (!trigger || !enabled(ctx)) return
-      const chats = ctx.state.get(KV.feishu.chats) ?? {}
-      chats[String(trigger.meta.chatId)] = trigger.meta.direct === true
-      ctx.state.set(KV.feishu.chats, chats)
-      await receive(ctx, trigger)
-    }).catch(error => { ctx.report('feishu', { state: 'error', detail: String(error) }) })
+      try {
+        if (line.length > 1_048_576) throw new Error('Feishu event exceeds 1 MiB')
+        const trigger = feishuTrigger(JSON.parse(line), bot(ctx).botId, bot(ctx).appId)
+        // Events already read when the Source is disabled are dropped; the consumer stops shortly after.
+        if (!trigger || !enabled(ctx)) return
+        const chats = ctx.state.get(KV.feishu.chats) ?? {}
+        chats[String(trigger.meta.chatId)] = trigger.meta.direct === true
+        ctx.state.set(KV.feishu.chats, chats)
+        await receive(ctx, trigger)
+      } catch (error) {
+        reportedError = true
+        ctx.report('feishu', { state: 'error', detail: String(error) })
+      }
+    })
   })
   try {
     await new Promise<void>((resolve, reject) => {
@@ -109,7 +119,7 @@ export async function refreshChatNames(ctx: SourceContext, signal?: AbortSignal)
   const commands = ctx.commands.withSignal(signal)
   const result = z.looseObject({ chats: z.array(z.looseObject({ chat_id: z.string(), name: z.string().nullish() })).optional() })
     .parse(await commands.lark(['im', '+chat-list', '--page-all', '--page-size', '100']))
-  const names = Object.fromEntries((result.chats ?? []).filter(chat => chat.name).map(chat => [chat.chat_id, chat.name!]))
+  const names = Object.fromEntries((result.chats ?? []).flatMap(chat => chat.name ? [[chat.chat_id, chat.name]] : []))
   ctx.state.set(KV.sources.labels(SOURCE), names)
   return names
 }
@@ -216,7 +226,7 @@ export function threadRef(ctx: SourceContext, thread: Thread): FeishuRef | undef
 }
 /** Polls subscribed Feishu threads within the polling horizon so replies missed by the live stream become triggers. */
 export async function pollThreads(ctx: SourceContext, signal?: AbortSignal, tally?: Tally): Promise<void> {
-  await pollEach(ctx, SOURCE, () => !!signal?.aborted, thread => pollThread(ctx, thread, signal, tally))
+  await pollEach(ctx, SOURCE, () => Boolean(signal?.aborted), thread => pollThread(ctx, thread, signal, tally))
 }
 async function pollThread(ctx: SourceContext, thread: Thread, signal?: AbortSignal, tally?: Tally): Promise<void> {
   const ref = threadRef(ctx, thread)
@@ -251,7 +261,7 @@ async function pollThread(ctx: SourceContext, thread: Thread, signal?: AbortSign
     }
     const encounteredKnown = result.messages.some(message => known.has(message.message_id))
     const { botId, appId } = bot(ctx)
-    for (const message of result.messages.filter(item => !known.has(item.message_id) && !item.deleted).reverse()) {
+    for (const message of result.messages.filter(item => !known.has(item.message_id) && !item.deleted).toReversed()) {
       if (signal?.aborted) return
       const trigger = feishuTrigger(topicEvent(message, ref.chatId, direct, root), botId, appId)
       // Ignore messages older than the thread subscription on initial poll.

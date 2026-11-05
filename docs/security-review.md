@@ -50,6 +50,12 @@ The remediation is in `pnpm-workspace.yaml`: root overrides restricted to the af
 
 References: [pnpm overrides](https://pnpm.io/settings#overrides), [pnpm update](https://pnpm.io/cli/update). Current documentation describes newer indirect-update warnings/errors; the exit-zero no-op above was measured on 11.7.0, not inferred from newer versions.
 
+## Feishu readiness race and portable verification
+
+The initially failing Feishu test exposed a real health-reporting race: the child's stdout and stderr are read independently, so the stderr startup-ready line could overwrite a JSON error already reported from stdout. Startup readiness now clears its timeout without clearing an error from the same consumer run. A new consumer attempt starts with a fresh error flag, so a successful restart still restores readiness. Parsing/ingestion errors remain caught and later valid messages are still processed.
+
+The existing malformed-event test is unchanged. The warning regression now covers both readiness-before-warning and warning-before-readiness; the new ordering failed against the original implementation and passes after the fix. The Git invalid-config test now checks the failure status and configuration path instead of localized English text.
+
 ## Verification
 
 ```sh
@@ -58,7 +64,7 @@ pnpm exec vitest run tests/views.spec.ts tests/markdown.spec.ts tests/panel-exec
 pnpm typecheck
 pnpm build
 pnpm audit --json
-LC_ALL=C pnpm check
+pnpm check
 ```
 
 - Frozen install: passed; no lifecycle scripts required.
@@ -66,9 +72,8 @@ LC_ALL=C pnpm check
 - Typecheck and build: passed.
 - Audit: **0 vulnerabilities**, including development dependencies.
 - Chromium component smoke: passed, with the scope described above.
-- Full suite with `LC_ALL=C`: **1203 passed, 1 failed** across 59 files. The failure is `tests/sources.spec.ts:1097`, where the Feishu consumer's health is `ready` rather than the expected JSON error. An unmodified archive of the baseline commit, installed offline with its original frozen lockfile, reproduces the same failure. It is not changed in this security branch.
-- With the host's Spanish locale, `tests/environment.spec.ts:154` also fails because it expects `/bad config/` but Git reports `mala línea de config`. The original baseline reproduces that failure too; `LC_ALL=C` avoids it.
+- Full suite: **1205 passed, 0 failed** across 59 files, including typecheck and build via `pnpm check`, without a locale override. The initial run had 1203 passing tests and a pre-existing Feishu failure, reproduced on the original baseline; the race and locale-sensitive assertion are now corrected as described above.
 - pi-lens follow-up: corrected two YAML line-length errors, the missing YAML document marker, and both non-null assertion warnings in `text.ts`. Direct `yamllint` and the full `tsc --noEmit` run pass; the refreshed session cache has no errors or warnings for either file. The active LSP probe cannot reconfirm the TypeScript file when its push-only server is silent on a clean re-check; this is covered separately by the successful typecheck.
-- Merge readiness: the full `LC_ALL=C pnpm check` was rerun after the pi-lens fixes and still has the pre-existing Feishu failure described above. A clean GitHub merge status is not equivalent to an entirely passing test suite.
+- Merge readiness: the complete local check now passes, rather than relying only on GitHub's mergeable status. The latest PR checks and security analysis must also pass before integration.
 
 GitHub's default-branch Dependabot and CodeQL alerts are not manually dismissed here. Audit results on this branch do not mean that GitHub has already closed its alerts; those require the relevant branch analysis/default-branch update.
