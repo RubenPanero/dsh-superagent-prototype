@@ -1,5 +1,5 @@
 import { execFileSync, spawnSync } from 'node:child_process'
-import { copyFileSync, mkdirSync, mkdtempSync, rmSync, writeFileSync } from 'node:fs'
+import { copyFileSync, mkdirSync, mkdtempSync, rmSync, symlinkSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { dirname, join, resolve } from 'node:path'
 import { fileURLToPath } from 'node:url'
@@ -21,6 +21,8 @@ beforeEach(() => {
   directory = mkdtempSync(join(tmpdir(), 'quality-gates-'))
   mkdirSync(join(directory, 'scripts'))
   mkdirSync(join(directory, 'src'))
+  symlinkSync(join(root, 'node_modules'), join(directory, 'node_modules'), 'dir')
+  writeFileSync(join(directory, '.gitignore'), 'node_modules/\n')
   for (const file of ['package.json', 'tsconfig.json', 'biome.json', '.jscpd.json', 'scripts/check-format.mjs']) {
     copyFileSync(join(root, file), join(directory, file))
   }
@@ -50,6 +52,18 @@ it.each(['untracked', 'staged', 'committed'])('checks formatting of %s new sourc
   expect(result.stdout + result.stderr).toContain('Formatter would have printed')
   writeFileSync(join(directory, 'src/new.ts'), 'export const answer = 42\n')
   expect(check().status).toBe(0)
+})
+
+it('does not resolve Git or Biome through an untrusted PATH', () => {
+  const bin = join(directory, 'untrusted-bin')
+  mkdirSync(bin)
+  for (const name of ['git', 'biome']) writeFileSync(join(bin, name), '#!/bin/sh\nexit 99\n', { mode: 0o755 })
+  const result = spawnSync(process.execPath, ['scripts/check-format.mjs'], {
+    cwd: directory,
+    env: { ...env, PATH: bin, QUALITY_BASE: base },
+    encoding: 'utf8',
+  })
+  expect(result.status, result.stdout + result.stderr).toBe(0)
 })
 
 it('fails closed when the comparison base does not exist', () => {

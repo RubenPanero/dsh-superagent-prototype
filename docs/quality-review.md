@@ -25,9 +25,13 @@ The two DSH peer mismatches are resolved with exact dev dependency versions that
 
 No peer ranges were widened and no peer-warning ignores were added. `strictPeerDependencies` is enabled and `pnpm check` now includes `pnpm peers check`.
 
-On Node 24.22.1 and pinned pnpm 11.7.0, frozen installation with scripts disabled, lint/complexity, formatting, peer checks, strict type checking, the full Vitest suite, production duplication detection, both builds and the dependency audit passed. The split scenarios increase the suite to 1217 tests in 66 files while preserving the previous assertions. Negative probes also confirm that the duplication and complexity gates reject violating code.
+On Node 24.22.1 and pinned pnpm 11.7.0, frozen installation with scripts disabled, lint/complexity, formatting, peer checks, strict type checking, the full Vitest suite, production duplication detection, both builds and the dependency audit passed. The split scenarios increase the suite to 1220 tests in 66 files while preserving the previous assertions. Negative probes also confirm that the duplication and complexity gates reject violating code.
 
 Local ignored Corepack shims address a conflicting global pnpm without bypassing the version pin or changing global tooling. Existing user changes to `docs/security-review.md` and `LocalDoc/` are excluded from this work.
+
+## Security findings from the first GitHub run
+
+The initial hosted analysis exposed two filesystem race alerts and Sonar findings about executable lookup and a predictable fixture directory. File validation and reads now share an opened no-follow descriptor; image reads are bounded even if a file grows, and temporary writes are exclusive and randomly named. Deterministic regression tests replace file paths between validation and reading, confirming that outside files are neither read as images nor overwritten. The quality script invokes fixed Linux Git and the locally pinned Biome through the current Node executable, with a hostile-PATH regression test. Default fixture directories are private, randomized, stable within each test and cleaned afterward. No alerts or quality gates were dismissed or disabled.
 
 ## GitHub verification and merge policy
 

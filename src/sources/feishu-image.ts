@@ -1,5 +1,6 @@
 /** Downloads Feishu message images and commits them as model-visible attachments during assessment. */
-import { mkdtemp, readFile, realpath, rm, stat } from 'node:fs/promises'
+import { mkdtemp, open, realpath, rm } from 'node:fs/promises'
+import { constants } from 'node:fs'
 import { dirname, extname, join } from 'node:path'
 import type { Agent } from '@deepseek-ai/dsh-agent'
 import type { ImageAttachmentRef, ImageMediaType } from '@deepseek-ai/dsh-attachment'
@@ -42,9 +43,17 @@ export async function readAdmissionImage(agent: Agent, commands: Commands, ref: 
     const mediaTypes: Record<string, ImageMediaType> = { '.png': 'image/png', '.jpg': 'image/jpeg', '.jpeg': 'image/jpeg', '.webp': 'image/webp', '.gif': 'image/gif' }
     const mediaType = mediaTypes[extname(path).toLowerCase()]
     if (!mediaType) throw new Error('The downloaded resource is not a supported PNG/JPEG/WebP/GIF image')
-    const file = await stat(path)
-    if (!file.isFile() || file.size > Math.min(attachments.imageLimits.maxImageBytes, attachments.imageLimits.maxMessageImageBytes)) throw new Error('The image exceeds the deployment byte limit or is not a regular file')
-    const data = await readFile(path, { signal })
+    const limit = Math.min(attachments.imageLimits.maxImageBytes, attachments.imageLimits.maxMessageImageBytes)
+    const handle = await open(path, constants.O_RDONLY | constants.O_NOFOLLOW | constants.O_NONBLOCK)
+    let data: Buffer
+    try {
+      const file = await handle.stat()
+      if (!file.isFile() || file.size > limit) throw new Error('The image exceeds the deployment byte limit or is not a regular file')
+      const chunks: Buffer[] = []
+      for await (const chunk of handle.createReadStream({ autoClose: false, signal, start: 0, end: limit })) chunks.push(chunk)
+      data = Buffer.concat(chunks)
+      if (data.length > limit) throw new Error('The image exceeds the deployment byte limit')
+    } finally { await handle.close() }
     signal.throwIfAborted()
     const image = await attachments.saveImage({ data, mediaType, name: `${imageKey}${extname(path)}` })
     signal.throwIfAborted()

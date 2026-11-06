@@ -2,10 +2,20 @@
 import type { Volatile } from '@deepseek-ai/cordis'
 import type { Deployment, Machine } from '../../src/deployment.ts'
 import { join } from 'node:path'
+import { mkdtempSync, rmSync } from 'node:fs'
+import { tmpdir } from 'node:os'
+import { afterEach } from 'vitest'
 import { credentialHelper, workerGitConfig } from '../../src/infra/environment.ts'
 
+let stateDir: string | undefined
+const fixtureDirectory = () => stateDir ??= mkdtempSync(join(tmpdir(), 'dsh-superagent-test-'))
+afterEach(() => {
+  if (stateDir) rmSync(stateDir, { recursive: true, force: true })
+  stateDir = undefined
+})
+
 export const GIT_HELPERS = 'git config -z --show-origin --get-all credential.https://github.com.helper'
-export const GIT_SCOPED = 'git config -z --show-scope --get-regexp ^(credential\\..*|http\\..*extraheader)$'
+const GIT_SCOPED = 'git config -z --show-scope --get-regexp ^(credential\\..*|http\\..*extraheader)$'
 
 /** Synthetic account executables and their startup-probe responses. */
 export function runtimeAccounts(directory: string) {
@@ -43,7 +53,7 @@ export const reference = <T>(value: T): Volatile<T> & { set(next: T): void } => 
   }
 }
 export const testMachine = (overrides: Partial<Machine> = {}): Machine => ({
-  stateDir: '/tmp/dsh-superagent-test',
+  stateDir: overrides.stateDir ?? fixtureDirectory(),
   promptMaxChars: reference(100000),
   admissionContextMaxPages: reference(10),
   admissionContextTimeoutMs: reference(15000),

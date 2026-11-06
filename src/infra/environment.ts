@@ -3,8 +3,9 @@
  * Variables read by workers avoid `KEY|PASSWORD|SECRET|TOKEN` in their names because DSH strips credential-shaped variables from child environments.
  * Provides default-path guardrails rather than an OS-level security boundary, as workers run under the operator's OS user.
  */
-import { lstat, mkdir, readdir, readFile, rename, unlink, writeFile } from 'node:fs/promises'
-import { realpathSync } from 'node:fs'
+import { mkdir, open, readdir, rename, unlink, writeFile } from 'node:fs/promises'
+import { constants, realpathSync } from 'node:fs'
+import { randomUUID } from 'node:crypto'
 import { delimiter, join, resolve } from 'node:path'
 import type { SubprocessOutputReader, SubprocessRuntime } from '@deepseek-ai/dsh-subprocess'
 import type { Deployment } from '../deployment.ts'
@@ -59,16 +60,26 @@ export function agentVariables(stateDir: string): Record<string, string | undefi
 
 /** True when a regular file starts with the dsh-superagent marker in its first two lines; a symbolic link, directory, or other non-regular file never counts as written by dsh-superagent. */
 async function written(file: string): Promise<boolean> {
-  if (!(await lstat(file)).isFile()) return false
-  const head = (await readFile(file, 'utf8')).split('\n', 2)
-  return [MARKER, ...LEGACY_MARKERS].some(marker => head.includes(marker))
+  const handle = await open(file, constants.O_RDONLY | constants.O_NOFOLLOW | constants.O_NONBLOCK).catch((error: unknown) => {
+    if (error instanceof Error && 'code' in error && error.code === 'ELOOP') return undefined
+    throw error
+  })
+  if (!handle) return false
+  try {
+    if (!(await handle.stat()).isFile()) return false
+    const head = (await handle.readFile('utf8')).split('\n', 2)
+    return [MARKER, ...LEGACY_MARKERS].some(marker => head.includes(marker))
+  } finally { await handle.close() }
 }
 async function own(file: string, text: string, mode = 0o644): Promise<void> {
   let foreign = false
-  try { foreign = !await written(file) } catch { /* The file does not exist yet. */ }
+  try { foreign = !await written(file) }
+  catch (error) {
+    if (!(error instanceof Error && 'code' in error && error.code === 'ENOENT')) throw error
+  }
   if (foreign) throw new SetupError('foreignFile', { file })
-  const temporary = `${file}.${process.pid}.tmp`
-  await writeFile(temporary, text, { mode })
+  const temporary = `${file}.${randomUUID()}.tmp`
+  await writeFile(temporary, text, { mode, flag: 'wx' })
   await rename(temporary, file)
 }
 
@@ -85,8 +96,8 @@ export async function writeEnvironment(deployment: Pick<Deployment, 'stateDir' |
   // Workers may be running concurrently: write each shim to a temp file and atomically rename it so no command ever resolves past the shim directory.
   const kept = new Set<string>()
   const shim = async (name: string, body: string): Promise<void> => {
-    const temporary = join(dir, `.${name}.${process.pid}.tmp`)
-    await writeFile(temporary, `#!/bin/sh\n${MARKER}\n${body}\n`, { mode: 0o755 })
+    const temporary = join(dir, `.${name}.${randomUUID()}.tmp`)
+    await writeFile(temporary, `#!/bin/sh\n${MARKER}\n${body}\n`, { mode: 0o755, flag: 'wx' })
     await rename(temporary, join(dir, name))
     kept.add(name)
   }

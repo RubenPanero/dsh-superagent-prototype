@@ -1,5 +1,6 @@
 import { mkdtempSync, rmSync } from 'node:fs'
-import { writeFile, readdir } from 'node:fs/promises'
+import { open, writeFile, readdir, type FileHandle } from 'node:fs/promises'
+import { renameSync, symlinkSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { Context } from '@deepseek-ai/cordis'
@@ -43,6 +44,30 @@ it('retains the source-message pairing, commits an image reference and removes t
   expect(saveImage).toHaveBeenCalledWith({ data: Buffer.from('data'), mediaType: 'image/png', name: 'img_source.png' })
   expect(await readdir(directory)).toEqual([])
 })
+it('reads the checked image descriptor even if its path is swapped before reading', async () => {
+  const outside = join(directory, 'outside.png')
+  await writeFile(outside, 'outside bytes')
+  const handle = await open(outside, 'r')
+  const prototype = Object.getPrototypeOf(handle) as FileHandle
+  const createStream = prototype.createReadStream
+  await handle.close()
+  let downloaded = ''
+  lark.mockImplementationOnce(async (_args, cwd) => {
+    downloaded = join(cwd!, 'image.png')
+    await writeFile(downloaded, 'data')
+    return { saved_path: downloaded }
+  })
+  const read = vi.spyOn(prototype, 'createReadStream').mockImplementationOnce(function(this: FileHandle, options) {
+    renameSync(downloaded, `${downloaded}.original`)
+    symlinkSync(outside, downloaded)
+    return createStream.call(this, options)
+  })
+  await readAdmissionImage(agent, commands, source, text, 'img_source', directory, signal())
+  expect(read).toHaveBeenCalledOnce()
+  expect(saveImage).toHaveBeenCalledWith({ data: Buffer.from('data'), mediaType: 'image/png', name: 'img_source.png' })
+  expect(await readdir(directory)).toEqual(['outside.png'])
+})
+
 it('rejects arbitrary keys and non-visual models before downloading', async () => {
   await expect(readAdmissionImage(agent, commands, source, text, '../img_other', directory, signal())).rejects.toThrow('source message')
   resolveModelInfo.mockResolvedValue({ inputModalities: ['text'] })

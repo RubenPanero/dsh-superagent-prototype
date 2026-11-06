@@ -1,5 +1,6 @@
 import { execFile, spawn } from 'node:child_process'
-import { chmodSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, rmSync, symlinkSync, writeFileSync } from 'node:fs'
+import { chmodSync, fstatSync, lstatSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, renameSync, rmSync, symlinkSync, writeFileSync } from 'node:fs'
+import { open, type FileHandle } from 'node:fs/promises'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { promisify } from 'node:util'
@@ -69,6 +70,32 @@ describe('worker shims', () => {
     expect(readdirSync(workerBin(dir)).sort()).toEqual(['gh', 'lark-cli'])
     expect(readFileSync(workerGitConfig(dir), 'utf8')).toContain('Written by dsh-superagent')
   })
+})
+
+it('keeps ownership checks bound to the opened file when its path is replaced', async () => {
+  const deployment = testDeployment({ stateDir: dir })
+  await writeEnvironment(deployment, [])
+  const path = workerGitConfig(dir)
+  const outside = join(dir, 'outside')
+  writeFileSync(outside, 'foreign configuration')
+  const handle = await open(path, 'r')
+  const inode = fstatSync(handle.fd).ino
+  const prototype = Object.getPrototypeOf(handle) as FileHandle
+  const read = prototype.readFile
+  await handle.close()
+  let swapped = false
+  vi.spyOn(prototype, 'readFile').mockImplementation(function(this: FileHandle, options) {
+    if (!swapped && fstatSync(this.fd).ino === inode) {
+      renameSync(path, `${path}.original`)
+      symlinkSync(outside, path)
+      swapped = true
+    }
+    return Reflect.apply(read, this, [options])
+  })
+  await writeEnvironment(deployment, [])
+  expect(swapped).toBe(true)
+  expect(readFileSync(outside, 'utf8')).toBe('foreign configuration')
+  expect(lstatSync(path).isSymbolicLink()).toBe(false)
 })
 
 describe('agent git configuration', () => {
