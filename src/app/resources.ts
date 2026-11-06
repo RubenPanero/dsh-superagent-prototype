@@ -16,7 +16,6 @@ import type { Commands } from '../infra/commands.ts'
 import type { PromptVersion, Prompts } from './prompts.ts'
 import type { Sessions } from './sessions.ts'
 import type { Settings } from './settings.ts'
-import { KV } from '../kv.ts'
 import type { Store } from './store.ts'
 import type { TextCache } from './cache.ts'
 
@@ -144,7 +143,7 @@ const ROUTES: readonly Route[] = [
     // Worker sessions cannot inspect other tickets or decisions on a shared thread.
     if (ticketId) return { ...card, ...page }
     const tickets = ids.flatMap(id => { const found = store.tickets.get(id); return found ? [ticketCard(found)] : [] })
-    const decisions = store.decisions.byThread(thread.key).slice(-THREAD_DECISIONS).reverse().map(decisionCard)
+    const decisions = store.decisions.byThread(thread.key).slice(-THREAD_DECISIONS).toReversed().map(decisionCard)
     return { ...card, tickets, decisions, ...page }
   }],
   ['decisions', read => list(read, (offset, count) => main(read).store.read.recentDecisions(offset, count).map(decisionCard))],
@@ -178,8 +177,13 @@ const ROUTES: readonly Route[] = [
     const prompts = host.prompts
     const bound = host.promptVersion(sessionId)
     const parts = () => Object.fromEntries(Object.entries(builtInParts()).map(([key, part]) => [key, part.text]))
-    const version = rest === 'current' ? bound : rest === 'defaults' && !ticketId ? { revision: 0, config: defaultPrompts(), parts: parts() }
-      : /^\d+$/.test(rest) ? (Number(rest) === 0 && prompts.current().revision === 0 ? prompts.current() : prompts.version(Number(rest))) : undefined
+    let version: PromptVersion | { revision: number; config: PromptVersion['config']; parts: Record<string, string> } | undefined
+    if (rest === 'current') version = bound
+    else if (rest === 'defaults' && !ticketId) version = { revision: 0, config: defaultPrompts(), parts: parts() }
+    else if (/^\d+$/.test(rest)) {
+      const revision = Number(rest)
+      version = revision === 0 && prompts.current().revision === 0 ? prompts.current() : prompts.version(revision)
+    }
     if (!version || (ticketId && !host.mayRead(sessionId, version.revision))) throw new Error('Unknown or inaccessible prompt version')
     return text({ ...read, resource: rest === 'current' ? `prompts/${version.revision}` : resource }, JSON.stringify(version))
   }],
@@ -200,7 +204,8 @@ const ROUTES: readonly Route[] = [
     return list(read, (offset, count) => models.slice(offset, offset + count))
   }],
   ['feishu/', async read => {
-    const source = trigger(read.host, read.rest.split('/')[0]!, read.ticketId)
+    const [id = ''] = read.rest.split('/')
+    const source = trigger(read.host, id, read.ticketId)
     const ref = feishuRef(source)
     if (!ref) throw new Error('A Feishu source trigger is required')
     const commands = read.host.commands.withSignal(read.signal)
@@ -214,7 +219,10 @@ const ROUTES: readonly Route[] = [
     const ref = feishuRef(found)
     // Redact decision IDs, other tickets, and unreachable neighbour triggers when a worker session reads a trigger.
     const ticket = ticketId ? host.store.tickets.get(ticketId) : undefined
-    const shown = (item: Trigger | undefined) => item && (!ticket || readable(host, ticket, item)) ? item : undefined
+    const shown = (item: Trigger | undefined) => {
+      if (!item || (ticket && !readable(host, ticket, item))) return undefined
+      return item
+    }
     const disposition = host.store.triggers.disposition(found.id)
     const visible = disposition && ticket ? { ...disposition, decisionId: undefined, fanout: disposition.fanout.filter(id => id === ticket.id) }
       : disposition
@@ -222,7 +230,9 @@ const ROUTES: readonly Route[] = [
     const { preview: _preview, chars: _chars, read: _read, ...card } = triggerCard(found, visible)
     const parent = found.source === 'feishu' && typeof found.meta.parentId === 'string' ? found.meta.parentId : undefined
     const repliedTo = shown(parent ? host.store.triggers.get(feishuTriggerId(parent)) : undefined)
-    const neighbours = host.store.read.neighbours(threadKey(found.threads[0]!), found.at, found.id)
+    const [primary] = found.threads
+    if (!primary) throw new Error('Trigger has no primary thread')
+    const neighbours = host.store.read.neighbours(threadKey(primary), found.at, found.id)
     const around = { before: shown(neighbours.before), after: shown(neighbours.after) }
     return { ...card, ...await host.sourceLink(found, signal), acknowledgement: host.store.replyStatus(key('ack', found.id)) ?? 'not_requested',
       ...(ref ? { context: feishuReferences(ref) } : {}),
@@ -247,16 +257,16 @@ const ROUTES: readonly Route[] = [
       const subscribed = host.store.read.subscribedThreads().filter(thread => thread.subscriptions.includes(id))
       const marked = (key: string, context: boolean): TicketThread =>
         ({ thread: key, ...context ? { context: true } : {}, ...bound.has(key) ? { bound: true } : {} })
-      const threads = [...subscribed.map(thread => marked(thread.key, !!thread.context?.includes(id))),
+      const threads = [...subscribed.map(thread => marked(thread.key, thread.context?.includes(id) === true)),
         ...[...bound].filter(key => !subscribed.some(thread => thread.key === key)).map(key => marked(key, false))]
-      return { ...ticketDetails(ticket, threads, batchOf(host, ticket), !!ticketId), ...retry }
+      return { ...ticketDetails(ticket, threads, batchOf(host, ticket), Boolean(ticketId)), ...retry }
     }
     if (section === 'assignments' || section === 'inputs') {
       if (part !== undefined) throw new Error('Unknown context resource')
       const size = Math.min(read.limit ?? (section === 'assignments' ? ASSIGNMENTS : INPUTS), 50)
       const { items, next_offset } = section === 'assignments'
         ? newestPage(ticket.assignments, read.offset, size, item => assignmentLine(ticket, item), resource)
-        : newestPage(ticket.inputs, read.offset, size, input => inputLine(ticket, input, !!ticketId), resource)
+        : newestPage(ticket.inputs, read.offset, size, input => inputLine(ticket, input, Boolean(ticketId)), resource)
       return { items, next_offset: next_offset ?? null }
     }
     let body: string
@@ -286,7 +296,7 @@ const ROUTES: readonly Route[] = [
         const said = entry?.message.content.map(block => block.type === 'text' ? block.text : `[${block.type}]`).join(' ') ?? ''
         return entry ? [{ type: entry.type, preview: preview(said).slice(0, 80), chars: JSON.stringify(entry).length,
           read: `ticket/${id}/message/${index}` }] : []
-      }).reverse().map(event => JSON.stringify(event)).join('\n')
+      }).toReversed().map(event => JSON.stringify(event)).join('\n')
     } else throw new Error('Unknown context resource')
     return text(read, body)
   }],
@@ -303,6 +313,6 @@ export async function readResource(host: ResourceHost, resource: string, offset:
   if (!route) throw new Error('Unknown context resource')
   const sessionId = ticketId ? workerSessionId(ticketId) : host.masterId
   const rest = route[0].endsWith('/') ? name.slice(route[0].length) : ''
-  return route[1]({ host, resource: name, rest, offset, sessionId, ...limit ? { limit } : {}, ...ticketId ? { ticketId } : {},
+  return await route[1]({ host, resource: name, rest, offset, sessionId, ...limit ? { limit } : {}, ...ticketId ? { ticketId } : {},
     ...signal ? { signal } : {} })
 }

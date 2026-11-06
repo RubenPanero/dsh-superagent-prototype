@@ -32,7 +32,15 @@ Read the numbered documents in order; each builds only on the ones before it.
 
 ## Development
 
-`pnpm check` runs the typecheck, the tests and the build.
+Use Node.js 22.19+ (22.x) or 24+, and the pnpm 11.7.0 version pinned in `package.json`:
+
+```sh
+corepack pnpm install --frozen-lockfile --ignore-scripts
+corepack pnpm check
+corepack pnpm security
+```
+
+`check` runs linting/complexity, formatting, strict type checking, tests, duplication detection and both builds. `security` audits all dependencies for high/critical advisories and requires registry access. CI also runs CodeQL and tests Node 22.19.0 and 24. See [AGENTS.md](AGENTS.md) for architecture, conventions, formatting scope, testing and the Definition of Done. Repository owners must make the quality jobs required checks and enable code-scanning merge protection; no publishing or deployment is automated.
 
 ## License
 

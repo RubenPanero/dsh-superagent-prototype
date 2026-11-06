@@ -13,15 +13,14 @@ import type {} from '@deepseek-ai/dsh-subprocess'
 import { mkdirSync } from 'node:fs'
 import { join } from 'node:path'
 import { lockSync } from 'proper-lockfile'
-import { Engine, key, reasonText, type EngineForSettings, type ReceiveResult, type Ticket, type Trigger } from '../core/index.ts'
-import { allowedSender, settingsPolicy } from '../policy.ts'
+import { Engine, key, type EngineForSettings, type ReceiveResult, type Ticket, type Trigger } from '../core/index.ts'
+import { settingsPolicy } from '../policy.ts'
 import { SourceRegistry } from '../sources/registry.ts'
 import { Commands } from '../infra/commands.ts'
 import type { Deployment, Machine } from '../deployment.ts'
 import { environmentOf, ticketEnvironment, type Variable } from './execution-environment.ts'
 import type { SetupProblem } from '../setup.ts'
-import { DshExecutor, sourceTrigger, triggerMessage, workerSessionId } from '../executor/dsh.ts'
-import { ticketCard } from './cards.ts'
+import { DshExecutor, sourceTrigger, workerSessionId } from '../executor/dsh.ts'
 import { MasterAssessor } from './assessment.ts'
 import { KV } from '../kv.ts'
 import { Store } from './store.ts'
@@ -99,7 +98,7 @@ export class Runtime extends Service implements SourceHost {
       const setup = this.setup = new Setup({ context: ctx, machine, lifetime: this.lifetime, restart })
       const deployed = () => setup.configured()
         ? environmentOf({ deployment: setup.deployment, sources: this.sources, settings: store.settings() }) : undefined
-      const feishu = () => setup.configured() && !!setup.deployment.feishu
+      const feishu = () => setup.configured() && Boolean(setup.deployment.feishu)
       const prompts = this.prompts = new Prompts(store, () => machine.promptMaxChars.get(), deployed, feishu)
       const masterId = this.masterId = store.get(KV.runtime.masterId) ?? `orchestrator-${key(machine.stateDir)}`
       store.set(KV.runtime.masterId, masterId)
@@ -182,7 +181,11 @@ export class Runtime extends Service implements SourceHost {
   get feishuProblem(): SetupProblem | undefined { return this.setup.feishuProblem }
   links(): LinkTarget {
     const resolved = this.setup.configured() ? this.setup.deployment : undefined
-    const links = resolved ? { repository: resolved.repository, ...(resolved.feishu ? { feishu: resolved.feishu } : {}) } : {}
+    const links: { repository?: string; feishu?: NonNullable<Deployment['feishu']> } = {}
+    if (resolved) {
+      links.repository = resolved.repository
+      if (resolved.feishu) links.feishu = resolved.feishu
+    }
     return channel => this.sources.link(channel, links)
   }
   ticketEnvironment(ticket: Ticket): Variable[] {
@@ -239,7 +242,7 @@ export class Runtime extends Service implements SourceHost {
       await this.executor.shutdown()
       this.executor.dispose()
       this.sessions.dispose()
-      for (const dispose of this.disposers.reverse()) dispose()
+      for (const dispose of this.disposers.toReversed()) dispose()
       await this.ctx.sessionPersistence.flush()
     } finally {
       // Close the database before releasing the directory lock so another process cannot open the database mid-write; a compromised lock may already be released.

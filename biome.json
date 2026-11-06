@@ -1,0 +1,97 @@
+{
+  "$schema": "https://biomejs.dev/schemas/2.6.5/schema.json",
+  "files": {
+    "includes": [
+      "src/**",
+      "tests/**",
+      "*.config.ts",
+      "*.json",
+      "scripts/*.mjs",
+      "!pnpm-lock.yaml"
+    ],
+    "ignoreUnknown": true
+  },
+  "vcs": {
+    "enabled": true,
+    "clientKind": "git",
+    "useIgnoreFile": true
+  },
+  "formatter": {
+    "indentStyle": "space",
+    "indentWidth": 2,
+    "lineWidth": 140
+  },
+  "javascript": {
+    "formatter": {
+      "quoteStyle": "single",
+      "semicolons": "asNeeded",
+      "trailingCommas": "es5"
+    }
+  },
+  "json": {
+    "formatter": {
+      "expand": "always"
+    }
+  },
+  "linter": {
+    "rules": {
+      "preset": "none",
+      "correctness": {
+        "noConstAssign": "error",
+        "noInvalidConstructorSuper": "error",
+        "noUnreachable": "error",
+        "noUnreachableSuper": "error",
+        "noUnsafeFinally": "error",
+        "noUnusedLabels": "error",
+        "noEmptyCharacterClassInRegex": "error",
+        "noSelfAssign": "error"
+      },
+      "suspicious": {
+        "noAsyncPromiseExecutor": "error",
+        "noCatchAssign": "error",
+        "noClassAssign": "error",
+        "noCompareNegZero": "error",
+        "noDebugger": "error",
+        "noDuplicateCase": "error",
+        "noDuplicateClassMembers": "error",
+        "noDuplicateObjectKeys": "error",
+        "noDuplicateParameters": "error",
+        "noFallthroughSwitchClause": "error",
+        "noFocusedTests": "error",
+        "noSkippedTests": "error",
+        "noMisleadingCharacterClass": "error",
+        "noUnsafeNegation": "error"
+      },
+      "complexity": {
+        "noExcessiveCognitiveComplexity": {
+          "level": "error",
+          "options": {
+            "maxAllowedComplexity": 51
+          }
+        }
+      },
+      "security": {
+        "noGlobalEval": "error"
+      }
+    }
+  },
+  "overrides": [
+    {
+      "includes": [
+        "tests/**"
+      ],
+      "linter": {
+        "rules": {
+          "complexity": {
+            "noExcessiveCognitiveComplexity": {
+              "level": "error",
+              "options": {
+                "maxAllowedComplexity": 82
+              }
+            }
+          }
+        }
+      }
+    }
+  ]
+}

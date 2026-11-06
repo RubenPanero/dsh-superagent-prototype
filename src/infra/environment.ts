@@ -77,7 +77,7 @@ async function own(file: string, text: string, mode = 0o644): Promise<void> {
  * Each shim strips the shim directory from PATH before exec so wrapper scripts resolving `gh` or `lark-cli` by name reach the real binary.
  */
 export async function writeEnvironment(deployment: Pick<Deployment, 'stateDir' | 'repository' | 'github' | 'feishu'>, blockedCommands: readonly string[]): Promise<void> {
-  const { stateDir, repository, github, feishu } = deployment
+  const { stateDir, github, feishu } = deployment
   const dir = workerBin(stateDir)
   await mkdir(dir, { recursive: true })
   const before = await readdir(dir)
@@ -152,6 +152,14 @@ export async function verifyDirectory(directory: string, subprocess: SubprocessR
   const output = await runAsWorker(subprocess, keys, directory, AbortSignal.any([signal, AbortSignal.timeout(60_000)]))
     .catch((error: unknown) => { if (error instanceof CliError && error.exitCode === 1) return ''; throw error })
   const scoped = output.split('\0')
-  const local = scoped.flatMap((scope, index) => index % 2 === 0 && (scope === 'local' || scope === 'worktree') ? [scoped[index + 1]!.split('\n')[0]!] : [])
+  const local: string[] = []
+  for (let index = 0; index < scoped.length; index += 2) {
+    const scope = scoped[index]
+    if (scope !== 'local' && scope !== 'worktree') continue
+    const field = scoped[index + 1]
+    if (field === undefined) throw new Error('Git returned an incomplete scoped configuration')
+    const [name = ''] = field.split('\n')
+    local.push(name)
+  }
   if (local.length) throw new Error(`The git configuration of the repository in ${directory} sets ${local.join(', ')}, which the agent's git would also read; remove them.`)
 }

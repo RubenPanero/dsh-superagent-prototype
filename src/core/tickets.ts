@@ -1,7 +1,7 @@
 /** Tickets: their lifecycle from an accept to their end, their Subscriptions and their Inputs. */
 import { key } from './ids.ts'
 import { UserError } from './errors.ts'
-import { latestAssignment, latestReport, liveTicket, readUntil, runningAssignment, settled, threadKey, waitsForPerson } from './model.ts'
+import { latestAssignment, liveTicket, readUntil, runningAssignment, settled, threadKey, waitsForPerson } from './model.ts'
 import type { Assignment, ChannelRef, Evaluation, Follow, Mandate, PolicyEffect, ThreadRef, Ticket, TicketEndBy, TicketInput, TicketOutcome,
   Trigger, TriggerDisposition } from './model.ts'
 import type { AssessmentOutcome } from './ports.ts'
@@ -16,8 +16,14 @@ export const automatic = (input: TicketInput | undefined): boolean => input?.kin
  * Whether a ticket's worker read a Trigger Input before `until`, its latest report or turn end: its Session took the message
  * into a step before then. One delivered before reads were recorded counts as read once it reached the worker by then.
  */
-const readBefore = (input: Extract<TicketInput, { kind: 'trigger' }>, until: string): boolean => input.readAt === undefined
-  ? (input.deliveredAt && input.deliveredAt > input.at ? input.deliveredAt : input.at) <= until : !!input.readAt && input.readAt < until
+const readBefore = (input: Extract<TicketInput, { kind: 'trigger' }>, until: string): boolean => {
+  if (input.readAt !== undefined) {
+    if (!input.readAt) return false
+    return input.readAt < until
+  }
+  const deliveredAt = input.deliveredAt && input.deliveredAt > input.at ? input.deliveredAt : input.at
+  return deliveredAt <= until
+}
 const STATUS_REQUEST = 'Report the current ticket status with orchestrator_report. This is a status-only request: do not resume implementation or perform external actions.'
 
 /**
@@ -38,8 +44,10 @@ export class Tickets extends EnginePart {
     outcome: Extract<AssessmentOutcome, { kind: 'accept' }>, at: string): void {
     const { triggerIds } = evaluation
     // Fall back to the last trigger for Evals recorded before `primary` existed.
-    const primary = this.repo.triggers.get(evaluation.primary ?? triggerIds.at(-1)!)
-    const origin = { triggerId: primary?.id ?? triggerIds[0]!, triggerIds }
+    const [first] = triggerIds
+    if (!first) throw new UserError('unknownTrigger')
+    const primary = this.repo.triggers.get(evaluation.primary ?? triggerIds.at(-1) ?? first)
+    const origin = { triggerId: primary?.id ?? first, triggerIds }
     let ticket: Ticket = { id, title: outcome.title, decisionId, mandate, channels: [], assignments: [], inputs: [], undelivered: [],
       createdAt: at, updatedAt: at, origin }
     for (const triggerId of triggerIds) {
@@ -47,8 +55,8 @@ export class Tickets extends EnginePart {
       if (channel && !ticket.channels.some(item => sameChannel(item, channel))) ticket.channels.push(channel)
     }
     ticket = this.options.prepareTicket?.(ticket, outcome) ?? ticket
-    const assignment = this.newAssignment(ticket)
-    this.repo.tickets.save(ticket)
+    const { ticket: created, assignment } = this.newAssignment(ticket)
+    this.repo.tickets.save(created)
     for (const triggerId of triggerIds) for (const ref of this.repo.triggers.get(triggerId)?.threads ?? []) this.subscribe(id, ref)
     if (outcome.acknowledgement && primary) this.replies.acknowledgeAccepted(id, primary, outcome.acknowledgement)
     this.options.executor.start(this.require(id), assignment)
@@ -65,7 +73,13 @@ export class Tickets extends EnginePart {
     const followed = threadKey(thread)
     const follow = ticket.follows?.find(item => item.thread === followed)
     // Re-binding a thread reopens it if previously closed; `own` remains true once set.
-    if (follow) { follow.own ||= own; delete follow.closed } else ticket.follows = [...ticket.follows ?? [], { thread: followed, own }]
+    if (follow) {
+      ticket.follows = (ticket.follows ?? []).map(item => {
+        if (item !== follow) return item
+        const { closed: _closed, ...open } = item
+        return { ...open, own: open.own || own }
+      })
+    } else ticket.follows = [...ticket.follows ?? [], { thread: followed, own }]
     ticket.updatedAt = this.now()
     this.repo.tickets.save(ticket)
     return ticket
@@ -96,8 +110,9 @@ export class Tickets extends EnginePart {
     const follows = ticket.follows ?? []
     const own = follows.filter(item => item.own)
     const counted = own.length ? own : follows
-    if (!counted.length || counted.some(item => !item.closed)) return undefined
-    return counted.map(item => item.closed!).sort((a, b) => a.at.localeCompare(b.at)).at(-1)
+    const closes = counted.flatMap(item => item.closed ? [item.closed] : [])
+    if (!closes.length || closes.length !== counted.length) return undefined
+    return closes.toSorted((a, b) => a.at.localeCompare(b.at)).at(-1)
   }
   /**
    * The Trigger to attach to a ticket, once the ticket may take it.
@@ -171,12 +186,12 @@ export class Tickets extends EnginePart {
     if (!canRetry(ticket) || !latest) throw new UserError('notRetryable')
     this.endAssignment(ticket, latest, 'retried')
     this.requeueUntaken(ticket, latest)
-    const assignment = this.newAssignment(ticket)
-    ticket.updatedAt = this.now()
-    this.repo.tickets.save(ticket)
-    this.options.executor.stop(ticket, latest, 'retried')
-    this.options.executor.start(ticket, assignment)
-    return ticket
+    const { ticket: retried, assignment } = this.newAssignment(ticket)
+    retried.updatedAt = this.now()
+    this.repo.tickets.save(retried)
+    this.options.executor.stop(retried, latest, 'retried')
+    this.options.executor.start(retried, assignment)
+    return retried
   }
   /**
    * Drops a ticket's Subscription to a Thread its worker found unrelated, and hands back, with `reason`, the person's messages there that the ticket decides.
@@ -259,13 +274,14 @@ export class Tickets extends EnginePart {
     const first = ticket.undelivered.map(id => ticket.inputs.find(input => input.id === id)).find(input => input?.kind === 'trigger' && input.human)
     if (first?.kind !== 'trigger') return
     const at = this.now()
-    delete ticket.ended; ticket.updatedAt = at
-    const assignment = this.newAssignment(ticket)
+    const { ended: _ended, ...open } = ticket
+    const { ticket: awakened, assignment } = this.newAssignment(open)
+    awakened.updatedAt = at
     // Prepend the resumed marker so it is delivered ahead of the waiting messages.
     const resumed: TicketInput = { id: key('input', ticket.id, 'resumed', first.triggerId), kind: 'resumed', triggerId: first.triggerId, at }
-    ticket.inputs.push(resumed); ticket.undelivered.unshift(resumed.id)
-    this.repo.tickets.save(ticket)
-    this.options.executor.start(ticket, assignment)
+    awakened.inputs.push(resumed); awakened.undelivered.unshift(resumed.id)
+    this.repo.tickets.save(awakened)
+    this.options.executor.start(awakened, assignment)
     this.emit('ticket.resumed', { ticketId, triggerId: first.triggerId })
   }
   /** The Triggers of a ticket's trigger Inputs, or of those of them whose Input ids are `ids`. */
@@ -303,7 +319,7 @@ export class Tickets extends EnginePart {
       const decision = disposition?.decisionId ? this.repo.decisions.get(disposition.decisionId) : undefined
       // The main Session that stopped this ticket on the message decides the rest of it itself, unless a ticket handed it back.
       const stopped = decision?.kind === 'stop' && decision.ticketId === ticketId && !disposition?.handbacks?.length
-      const decided = !!decision && (settled(decision) || stopped)
+      const decided = decision !== undefined && (settled(decision) || stopped)
       if (!this.owners(trigger).length && !disposition?.acked?.length && !decided) this.queueForEval(trigger)
     }
   }
@@ -318,12 +334,12 @@ export class Tickets extends EnginePart {
   restart(ticket: Ticket, running: Assignment, reason: string, note: string): void {
     this.endAssignment(ticket, running, reason)
     this.requeueUntaken(ticket, running)
-    const assignment = this.newAssignment(ticket)
+    const { ticket: restarted, assignment } = this.newAssignment(ticket)
     const at = this.now()
     const input: TicketInput = { id: key('input', ticket.id, 'restart', assignment.id), kind: 'text', text: note, at }
-    ticket.inputs.push(input); ticket.undelivered.push(input.id); ticket.updatedAt = at
-    this.repo.tickets.save(ticket)
-    this.options.executor.start(ticket, assignment)
+    restarted.inputs.push(input); restarted.undelivered.push(input.id); restarted.updatedAt = at
+    this.repo.tickets.save(restarted)
+    this.options.executor.start(restarted, assignment)
   }
   /**
    * Put back, ahead of what waits, the Trigger Inputs delivered to `replaced` that no step of its worker took: a cancel may
@@ -352,14 +368,14 @@ export class Tickets extends EnginePart {
     const left = this.untaken(ticket, ticket.inputs.flatMap(input => input.kind === 'trigger'
       && (!readBefore(input, until) || ticket.undelivered.includes(input.id)) ? [input.id] : []))
     // An end dated earlier, such as a PR's merge, does not move the ticket's last change back.
-    ticket.ended = { at, by, outcome, ...why }; ticket.undelivered = []; ticket.updatedAt = this.now()
-    delete ticket.attention; delete ticket.delivery
+    const { attention: _attention, delivery: _delivery, ...ended } = ticket
+    ended.ended = { at, by, outcome, ...why }; ended.undelivered = []; ended.updatedAt = this.now()
     // The Assignments the end stops end with it; the ticket's end says why.
     for (const assignment of stopping) { assignment.state = 'ended'; assignment.endedAt = at }
-    this.repo.tickets.save(ticket)
+    this.repo.tickets.save(ended)
     this.letGo(ticketId, waiting, left)
     this.emit('ticket.ended', { ticketId, by, outcome, ...why })
-    for (const assignment of stopping) this.options.executor.stop(ticket, assignment, reason ?? outcome)
+    for (const assignment of stopping) this.options.executor.stop(ended, assignment, reason ?? outcome)
   }
   /**
    * Whether a ticket's work has not finished at a close at `at`: its worker took up a person's message the ticket decides and
@@ -378,11 +394,11 @@ export class Tickets extends EnginePart {
     return report?.state !== 'ready' || ticket.undelivered.length > 0 || later
   }
   /** Add a pending Assignment; a failed delivery to the one before it no longer concerns the ticket. */
-  private newAssignment(ticket: Ticket): Assignment {
+  private newAssignment(current: Ticket): { ticket: Ticket; assignment: Assignment } {
+    const { delivery: _delivery, ...ticket } = current
     const assignment: Assignment = { id: key('assignment', ticket.id, String(ticket.assignments.length)), state: 'pending', createdAt: this.now() }
-    ticket.assignments.push(assignment)
-    delete ticket.delivery
-    return assignment
+    ticket.assignments = [...ticket.assignments, assignment]
+    return { ticket, assignment }
   }
   private endAssignment(ticket: Ticket, assignment: Assignment, reason: string): void {
     assignment.state = 'ended'; assignment.endedAt = this.now(); assignment.endedReason = reason

@@ -1,7 +1,7 @@
 /** The domain Engine: the single entry point of the core, and the role interfaces its callers receive. */
 import { UserError } from './errors.ts'
 import { isoTime, liveTicket } from './model.ts'
-import type { ChannelRef, Decision, PolicyEffect, ThreadRef, Ticket, Trigger } from './model.ts'
+import type { Decision, PolicyEffect, ThreadRef, Ticket, Trigger } from './model.ts'
 import type { Candidate, Repositories } from './ports.ts'
 import type { EngineOptions } from './part.ts'
 import { Assignments, type WorkerReport } from './assignments.ts'
@@ -116,7 +116,9 @@ export class Engine {
       this.tickets.attach(ticketId, trigger, note)
       this.evals.routed(triggerId, ticketId)
       this.tickets.wake(ticketId)
-      return this.repo.tickets.get(ticketId)!
+      const ticket = this.repo.tickets.get(ticketId)
+      if (!ticket) throw new UserError('unknownTicket')
+      return ticket
     })
   }
   /**

@@ -8,7 +8,7 @@ import { ciCounts, ciFact, ciFailures, ciSummary, githubThreadContext, pullCheck
 import { branchCiTrigger, ciTrigger, commentTrigger, CommentSchema, githubAddress, issueTrigger, IssueSchema, pullTrigger, SOURCE }
   from './github-trigger.ts'
 import { githubLink, sendGithub } from './github-channel.ts'
-import type { GithubComment, PullRef } from './github-trigger.ts'
+import type { PullRef } from './github-trigger.ts'
 import { observePull, pullsOf, readPull, type Pull } from './github-pull.ts'
 import { health, sourceContext, type Health, type SourceContext } from './host.ts'
 import { KV } from '../kv.ts'
@@ -81,12 +81,12 @@ export const githubKind: SourceKind<GithubConfig> = {
       const config = GithubConfigSchema.partial().parse(stored)
       const note = (observed: boolean | undefined) => observed ? { zh: '全部', en: 'All' } : { zh: '仅 @', en: '@ only' }
       const row = (id: Scope, label: { zh: string; en: string }) => ({ id, label, note: note(config[OBSERVED[id]]),
-        cells: { listedUnaddressed: !!config[OBSERVED[id]], unlistedAddressed: true, unlistedUnaddressed: !!config[OBSERVED[id]] } })
+        cells: { listedUnaddressed: Boolean(config[OBSERVED[id]]), unlistedAddressed: true, unlistedUnaddressed: Boolean(config[OBSERVED[id]]) } })
       return [row('issues', { zh: '新 Issue', en: 'New Issues' }), row('pulls', { zh: '新 PR', en: 'New pull requests' }),
         row('comments', { zh: '评论', en: 'Comments' }),
         // CI has no sender, so only the cell of a sender off the list who does not address the agent applies.
         { id: 'ci', label: { zh: '默认分支的 CI', en: 'Default branch CI' }, note: config.observeCi ? { zh: '接收', en: 'Received' } : { zh: '不接收', en: 'Not received' },
-          cells: { listedUnaddressed: false, unlistedAddressed: false, unlistedUnaddressed: !!config.observeCi } }]
+          cells: { listedUnaddressed: false, unlistedAddressed: false, unlistedUnaddressed: Boolean(config.observeCi) } }]
     },
   },
   environment: {
@@ -151,15 +151,15 @@ interface Round {
 }
 const newRound = (signal?: AbortSignal): Round => ({ started: new Date().toISOString(), signal, pulls: new Map(), read: new Set(),
   failures: [], dropped: [], abandoned: [], tally: { skipped: 0 } })
-const stopped = (ctx: SourceContext, round: Round): boolean => !!round.signal?.aborted || !ctx.config(SOURCE)
+const stopped = (ctx: SourceContext, round: Round): boolean => round.signal?.aborted === true || !ctx.config(SOURCE)
 export interface Retry { since: string; pr: boolean; failedAt?: string; attempts?: number }
 const RETRY_WINDOW_MS = 24 * 3600_000
 /** True when GitHub returns HTTP 410 (Gone); HTTP 404 is retried because it can indicate revoked access to a private repository. */
 const deleted = (error: unknown): boolean => error instanceof CliError && error.code === 410
 /** Records a failed read on the Thread and in the round; deleted (410) or abandoned (24h+) threads do not fail the round. */
-function failed(ctx: SourceContext, round: Round, number: number, error: unknown, abandoned = false): void {
+function failed(ctx: SourceContext, round: Round, number: number, error: unknown, outcome: 'retrying' | 'abandoned' = 'retrying'): void {
   if (deleted(error)) round.dropped.push(number)
-  else if (abandoned) round.abandoned.push(number)
+  else if (outcome === 'abandoned') round.abandoned.push(number)
   else round.failures.push(`#${number}: ${String(error)}`)
   ctx.threads.patch(`github:${number}`, { pollError: String(error) })
 }
@@ -167,6 +167,11 @@ function included(raw: string): { headers: string; body: string } {
   const split = raw.search(/\r?\n\r?\n/)
   if (split < 0) throw new Error('GitHub returned no HTTP headers')
   return { headers: raw.slice(0, split), body: raw.slice(split).trim() }
+}
+/** Decode a list without letting a malformed response advance any polling cursor. */
+function listResponse(body: string): unknown[] {
+  try { return z.array(z.unknown()).parse(JSON.parse(body)) }
+  catch (cause) { throw new Error('GitHub returned an invalid list response', { cause }) }
 }
 const ListedSchema = CommentSchema.extend({ issue_url: z.string().nullish(), pull_request_url: z.string().nullish() })
 /** Repository-wide event streams; GitHub's `/issues` endpoint includes PRs, and `/issues/comments` covers issue and PR conversation comments (excluding inline review comments). */
@@ -203,7 +208,12 @@ async function pollRepository(ctx: SourceContext, round: Round): Promise<void> {
 async function readStream(ctx: SourceContext, round: Round, id: string, path: string, config: GithubConfig): Promise<void> {
   const name = KV.github.stream(id)
   const stored = ctx.state.get(name)
-  const kinds = id === 'issues' ? [...config.observeIssues ? ['issues'] : [], ...config.observePulls ? ['pulls'] : []] : ['comments']
+  let kinds = ['comments']
+  if (id === 'issues') {
+    kinds = []
+    if (config.observeIssues) kinds.push('issues')
+    if (config.observePulls) kinds.push('pulls')
+  }
   const before = typeof stored?.started === 'object' ? stored.started : {}
   const started: Record<string, string> = Object.fromEntries(kinds.map(kind => [kind, before[kind] ?? round.started]))
   const horizon = Math.floor((Date.parse(round.started) - POLL_HORIZON_MS) / 3_600_000) * 3_600_000
@@ -217,17 +227,19 @@ async function readStream(ctx: SourceContext, round: Round, id: string, path: st
     throw error
   }
   const { headers, body } = included(raw)
-  const items = validItems(ListedSchema, z.array(z.unknown()).parse(JSON.parse(body)), round.tally)
+  const items = validItems(ListedSchema, listResponse(body), round.tally)
   const { login } = ctx.deployment.github
-  const fresh = (at: string | null | undefined, kind: string) =>
-    kind in started && Date.parse(at ?? '') >= Math.max(Date.parse(started[kind]!), horizon)
+  const fresh = (at: string | null | undefined, kind: string) => {
+    const began = started[kind]
+    return began !== undefined && Date.parse(at ?? '') >= Math.max(Date.parse(began), horizon)
+  }
   for (const item of items) {
     // Stopping mid-stream aborts before advancing the cursor so unread items are retried.
     if (stopped(ctx, round)) throw new Error('The GitHub Source stopped during the poll')
     if (sameName(item.user.login, login)) continue
     if (id === 'issues') {
       const issue = IssueSchema.safeParse(item)
-      const pr = issue.success && !!issue.data.pull_request
+      const pr = issue.success && Boolean(issue.data.pull_request)
       if (!issue.success || !fresh(issue.data.created_at, pr ? 'pulls' : 'issues')) continue
       await ctx.receive(pr ? pullTrigger(issue.data, login) : issueTrigger(issue.data, login))
       nameThread(ctx, issue.data.number, issue.data.title)
@@ -311,16 +323,17 @@ async function pollNotifications(ctx: SourceContext, round: Round): Promise<{ co
   const interval = Math.max(60, Number.isFinite(asked) ? asked : 60)
   const notifications = /rel="next"/.test(headers)
     ? await commands.pages(NotificationSchema, path, round.tally)
-    : validItems(NotificationSchema, z.array(z.unknown()).parse(JSON.parse(body)), round.tally)
+    : validItems(NotificationSchema, listResponse(body), round.tally)
   const retries = { ...state.get(KV.github.retries) }
   // Failed items from the previous round run first, followed by newly notified items in chronological order; each is read once.
   const items = new Map(Object.entries(retries).map(([number, retry]) => [Number(number), retry]))
-  for (const notification of notifications.reverse()) {
+  for (const notification of notifications.toReversed()) {
     if (!sameName(notification.repository.full_name, repository)) continue
     const address = githubAddress(notification.subject.url ?? '', repository)
     if (!address || address.discussion || items.has(address.number)) continue
     const { number, pr } = address
-    items.set(number, { since: [state.get(KV.github.cursor(number)) ?? since, since].sort().at(-1)!, pr })
+    const cursor = state.get(KV.github.cursor(number)) ?? since
+    items.set(number, { since: cursor > since ? cursor : since, pr })
   }
   for (const [number, item] of items) {
     if (stopped(ctx, round)) return { count: notifications.length, interval }
@@ -333,7 +346,7 @@ async function pollNotifications(ctx: SourceContext, round: Round): Promise<{ co
       const retry = { ...item, failedAt: item.failedAt ?? round.started, attempts: (item.attempts ?? 0) + 1 }
       // Abandon notification retries after 24 hours of failures so a permanently unreadable thread does not hold source health in error; its cursor stays so a later notification or thread poll still reads what was missed.
       const abandoned = Date.parse(round.started) - Date.parse(retry.failedAt) >= RETRY_WINDOW_MS
-      failed(ctx, round, number, error, abandoned)
+      failed(ctx, round, number, error, abandoned ? 'abandoned' : 'retrying')
       if (!deleted(error) && !abandoned) { retries[number] = retry; continue }
       delete retries[number]
     }
@@ -347,7 +360,7 @@ async function readNotified(ctx: SourceContext, round: Round, number: number, it
   if (!isPr) {
     const issue = await ctx.commands.withSignal(round.signal).api(IssueSchema, `issues/${number}`)
     // `issues/<n>` also returns PRs with `pull_request` set; handle them in the PR branch below.
-    isPr = !!issue.pull_request
+    isPr = Boolean(issue.pull_request)
     if (!isPr) {
       // An Issue opened by someone other than the agent since the cursor brings its body so a mention in it reaches the gate.
       // A mention added by a later edit to the body is not read: only the author can be the actor of the body.
@@ -387,7 +400,9 @@ async function intakeComments(ctx: SourceContext, ref: PullRef, since: string, r
   const kinds = ref.isPr ? ['conversation', 'inline', 'review'] as const : ['conversation'] as const
   for (const kind of kinds) {
     const suffix = `&since=${encodeURIComponent(since)}`
-    const path = kind === 'conversation' ? `issues/${ref.number}/comments?per_page=100${suffix}` : kind === 'inline' ? `pulls/${ref.number}/comments?per_page=100${suffix}` : `pulls/${ref.number}/reviews?per_page=100`
+    let path = `pulls/${ref.number}/reviews?per_page=100`
+    if (kind === 'conversation') path = `issues/${ref.number}/comments?per_page=100${suffix}`
+    else if (kind === 'inline') path = `pulls/${ref.number}/comments?per_page=100${suffix}`
     const comments = await commands.pages(CommentSchema, path, round.tally)
     for (const comment of comments) {
       // Stopping mid-read throws so the thread's cursor stays where it was.
@@ -445,7 +460,7 @@ async function pollThread(ctx: SourceContext, round: Round, thread: Thread): Pro
   round.read.add(number)
   if (typeof thread.meta.isPr !== 'boolean' || typeof thread.meta.title !== 'string') {
     const issue = await ctx.commands.withSignal(round.signal).api(IssueSchema, `issues/${number}`)
-    ctx.threads.patch(thread.key, { number, isPr: !!issue.pull_request, url: issue.html_url })
+    ctx.threads.patch(thread.key, { number, isPr: Boolean(issue.pull_request), url: issue.html_url })
     if (issue.title) nameThread(ctx, number, issue.title)
     thread = ctx.threads.get(thread.key) ?? thread
   }
