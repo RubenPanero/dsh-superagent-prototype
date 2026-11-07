@@ -152,6 +152,9 @@ export function ticketExecution(
 /** Character limits for inline assignment and trigger text in worker messages; longer text is read via its resource. */
 const ASSIGNMENT_CHARS = 1500,
   TRIGGER_CHARS = 600
+/** Encodes untrusted event text as inert JSON data to reduce prompt-instruction ambiguity in downstream worker prompts. */
+const encodeUntrustedText = (text: string): string =>
+  JSON.stringify({ kind: 'untrusted_trigger_text', text: text.replace(/[\u0000-\u001f\u007f]/g, ' ') })
 /** Returns `text` up to `limit` characters, or a truncated preview with total character count and the resource path to read the full text. */
 const capped = (text: string, limit: number, read: string) =>
   text.length <= limit ? { text } : { text: `${text.slice(0, limit)}…`, chars: text.length, read }
@@ -172,10 +175,17 @@ export function triggerMessage(
     from: trigger.actor.id,
     thread: threadKey(primary),
     at: trigger.at,
-    ...capped(trigger.text, TRIGGER_CHARS, `trigger/${trigger.id}`),
+    ...capped(encodeUntrustedText(trigger.text), TRIGGER_CHARS, `trigger/${trigger.id}`),
     ...link,
     ...(note ? { routing_note: note } : {}),
-    ...(repliesTo ? { replies_to: { trigger_id: repliesTo.id, preview: repliesTo.text.replace(/\s+/g, ' ').slice(0, 160) } } : {}),
+    ...(repliesTo
+      ? {
+          replies_to: {
+            trigger_id: repliesTo.id,
+            preview: encodeUntrustedText(repliesTo.text.replace(/\s+/g, ' ').slice(0, 160)),
+          },
+        }
+      : {}),
   }
 }
 /** Formats a peer trigger from the ticket's acceptance batch with author, timestamp, 160-character preview, and read resource path. */
