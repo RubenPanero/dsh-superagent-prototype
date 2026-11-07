@@ -144,7 +144,7 @@ it('retries only a failed, blocked or undelivered ticket with a new assignment',
   expect(h.relays(`worker-${ticket.id}`).at(-1)).toMatchObject({
     ticket_id: ticket.id,
     title: '修复回归',
-    trigger: expect.objectContaining({ text: '@bot 修一下回归' }),
+    trigger: expect.objectContaining({ text: JSON.stringify({ kind: 'untrusted_trigger_text', text: '@bot 修一下回归' }) }),
   })
 })
 

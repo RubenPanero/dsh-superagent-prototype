@@ -68,7 +68,8 @@ it('relays an explicit member mention as a candidate and creates the ticket, ack
   expect(first).toEqual({
     ticket_id: ticket.id,
     title: '修复回归',
-    trigger: expect.objectContaining({ trigger_id: trigger.id, from: MEMBER, thread: `feishu:${CHAT}:om_1`, text: trigger.text }),
+    trigger: expect.objectContaining({ trigger_id: trigger.id, from: MEMBER, thread: `feishu:${CHAT}:om_1`,
+      text: JSON.stringify({ kind: 'untrusted_trigger_text', text: trigger.text }) }),
   })
   expect(first.trigger).not.toHaveProperty('read')
   expect(
@@ -83,7 +84,8 @@ it("fans a person's later thread message out to the live worker as context and t
   await h.receive(followup)
   const worker = h.relays(sessionId)
   expect(worker).toHaveLength(1)
-  expect(worker[0]).toMatchObject({ trigger_id: followup.id, from: 'ou_guest', text: '顺便看看日志' })
+  expect(worker[0]).toMatchObject({ trigger_id: followup.id, from: 'ou_guest',
+    text: JSON.stringify({ kind: 'untrusted_trigger_text', text: '顺便看看日志' }) })
   expect(worker[0]).not.toHaveProperty('read')
   // Its resource renders the same, from the ticket; no body of it is stored.
   const resource = `ticket/${ticket.id}/input/${key(h.runtime.store.tickets.get(ticket.id)!.inputs[0]!.id)}`
@@ -97,7 +99,7 @@ it("fans a person's later thread message out to the live worker as context and t
       from: 'ou_guest',
       thread: `feishu:${CHAT}:om_1`,
       at: followup.at,
-      text: '顺便看看日志',
+      text: JSON.stringify({ kind: 'untrusted_trigger_text', text: '顺便看看日志' }),
       delivered_to: [{ ticket_id: ticket.id, title: '修复回归', state: 'working' }],
       note: expect.stringContaining('worker has it and decides'),
     },
@@ -224,7 +226,8 @@ it('attaches an event to an existing open task through orchestrator_route', asyn
   expect(h.runtime.store.decisions.byThread(`feishu:${CHAT}:om_9`)).toEqual([
     expect.objectContaining({ kind: 'ignore', reason: [{ code: 'routed', values: { ticket: ticket.id } }] }),
   ])
-  expect(h.relays(sessionId)[0]).toMatchObject({ trigger_id: other.id, text: '@bot 顺手把这里也改了', routing_note: '同一个页面' })
+  expect(h.relays(sessionId)[0]).toMatchObject({ trigger_id: other.id,
+    text: JSON.stringify({ kind: 'untrusted_trigger_text', text: '@bot 顺手把这里也改了' }), routing_note: '同一个页面' })
 })
 
 it('acknowledges a follow-up from the worker once and rejects events outside the task', async () => {
