@@ -47,7 +47,8 @@ const SHUTDOWN_STOP_MS = 10_000
 /** How long a worker that goes on after a passing failure waits for a worker slot, or for processing to resume, between looks. */
 const SLOT_WAIT_MS = 5000
 /** True when an input comes from a person (a non-context human trigger or a direct text input such as a status request). */
-const fromPerson = (input?: TicketInput): boolean => (input?.kind === 'trigger' ? input.human === true && !input.context : input?.kind === 'text')
+const fromPerson = (input?: TicketInput): boolean =>
+  input?.kind === 'trigger' ? input.human === true && !input.context : input?.kind === 'text'
 /**
  * Internal error thrown when a ticket's workspace prepare command fails during launch.
  * DshExecutor catches it to mark the ticket failed immediately rather than retrying automatically, because an existing directory counts as prepared and an automatic retry would treat whatever a failed prepare command left behind in the directory as a prepared workspace.
@@ -588,15 +589,16 @@ export class DshExecutor implements Executor {
     const batch = told ? [] : batchOf(this.host, ticket).map(batchLine)
     let text: string
     if (told) text = JSON.stringify({ ticket_id: ticket.id, assignment: ticket.assignments.length, ...retried })
-    else text = JSON.stringify({
-          ticket_id: ticket.id,
-          title: ticket.title,
-          ...(brief ? { assignment: brief } : {}),
-          ...(read ? { assignment_chars: chars, assignment_read: read } : {}),
-          ...(card ? { trigger: card } : {}),
-          ...(batch.length ? { batch } : {}),
-          ...retried,
-        })
+    else
+      text = JSON.stringify({
+        ticket_id: ticket.id,
+        title: ticket.title,
+        ...(brief ? { assignment: brief } : {}),
+        ...(read ? { assignment_chars: chars, assignment_read: read } : {}),
+        ...(card ? { trigger: card } : {}),
+        ...(batch.length ? { batch } : {}),
+        ...retried,
+      })
     const requestId = later ? `assignment:${ticket.id}:${assignment.id}` : first
     await this.host.sessions.prompt(
       sessionId,

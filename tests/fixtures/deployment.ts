@@ -8,7 +8,7 @@ import { afterEach } from 'vitest'
 import { credentialHelper, workerGitConfig } from '../../src/infra/environment.ts'
 
 let stateDir: string | undefined
-const fixtureDirectory = () => stateDir ??= mkdtempSync(join(tmpdir(), 'dsh-superagent-test-'))
+const fixtureDirectory = () => (stateDir ??= mkdtempSync(join(tmpdir(), 'dsh-superagent-test-')))
 afterEach(() => {
   if (stateDir) rmSync(stateDir, { recursive: true, force: true })
   stateDir = undefined

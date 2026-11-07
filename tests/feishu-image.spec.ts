@@ -28,18 +28,41 @@ beforeEach(() => {
   const ctx = new Context()
   ctx.reflect.provide('attachments', { saveImage, imageLimits: { maxImageBytes: 100, maxMessageImageBytes: 100 } })
   ctx.reflect.provide('llm', { resolveModelInfo })
-  agent = { ctx, session: { requestHeader: () => ({ config: { provider: 'chosen-provider', model: 'chosen-model' } }) }, options: {} } as unknown as Agent
+  agent = {
+    ctx,
+    session: { requestHeader: () => ({ config: { provider: 'chosen-provider', model: 'chosen-model' } }) },
+    options: {},
+  } as unknown as Agent
   lark = vi.spyOn(Commands.prototype, 'lark').mockImplementation(async (args: string[], cwd?: string) => {
-    expect(args).toEqual(['im', '+messages-resources-download', '--message-id', 'om_source', '--file-key', 'img_source', '--type', 'image', '--output', './image'])
+    expect(args).toEqual([
+      'im',
+      '+messages-resources-download',
+      '--message-id',
+      'om_source',
+      '--file-key',
+      'img_source',
+      '--type',
+      'image',
+      '--output',
+      './image',
+    ])
     expect(cwd).toContain(directory)
-    const saved_path = join(cwd!, 'image.png'); await writeFile(saved_path, 'data')
+    const saved_path = join(cwd!, 'image.png')
+    await writeFile(saved_path, 'data')
     return { saved_path }
   })
 })
-afterEach(() => { vi.restoreAllMocks(); rmSync(directory, { recursive: true, force: true }) })
+afterEach(() => {
+  vi.restoreAllMocks()
+  rmSync(directory, { recursive: true, force: true })
+})
 it('retains the source-message pairing, commits an image reference and removes temporary files', async () => {
   expect(admissionImageKeys('![Image](img_source) {"image_key":"img_second"} img_source')).toEqual(['img_source', 'img_second'])
-  expect(await readAdmissionImage(agent, commands, source, text, 'img_source', directory, signal())).toEqual({ source_message_id: 'om_source', image_key: 'img_source', image: ref })
+  expect(await readAdmissionImage(agent, commands, source, text, 'img_source', directory, signal())).toEqual({
+    source_message_id: 'om_source',
+    image_key: 'img_source',
+    image: ref,
+  })
   expect(resolveModelInfo).toHaveBeenCalledWith('chosen-provider', 'chosen-model', expect.any(AbortSignal))
   expect(saveImage).toHaveBeenCalledWith({ data: Buffer.from('data'), mediaType: 'image/png', name: 'img_source.png' })
   expect(await readdir(directory)).toEqual([])
@@ -57,7 +80,7 @@ it('reads the checked image descriptor even if its path is swapped before readin
     await writeFile(downloaded, 'data')
     return { saved_path: downloaded }
   })
-  const read = vi.spyOn(prototype, 'createReadStream').mockImplementationOnce(function(this: FileHandle, options) {
+  const read = vi.spyOn(prototype, 'createReadStream').mockImplementationOnce(function (this: FileHandle, options) {
     renameSync(downloaded, `${downloaded}.original`)
     symlinkSync(outside, downloaded)
     return createStream.call(this, options)
@@ -71,7 +94,9 @@ it('reads the checked image descriptor even if its path is swapped before readin
 it('rejects arbitrary keys and non-visual models before downloading', async () => {
   await expect(readAdmissionImage(agent, commands, source, text, '../img_other', directory, signal())).rejects.toThrow('source message')
   resolveModelInfo.mockResolvedValue({ inputModalities: ['text'] })
-  await expect(readAdmissionImage(agent, commands, source, text, 'img_source', directory, signal())).rejects.toThrow('does not support image')
+  await expect(readAdmissionImage(agent, commands, source, text, 'img_source', directory, signal())).rejects.toThrow(
+    'does not support image'
+  )
   expect(lark).not.toHaveBeenCalled()
   expect(saveImage).not.toHaveBeenCalled()
 })
@@ -84,12 +109,18 @@ it('cleans up refused attachments and failed downloads without returning an imag
   expect(await readdir(directory)).toEqual([])
 })
 it('refuses escaped output paths, oversize files and unsupported types', async () => {
-  const outside = join(directory, 'outside.png'); await writeFile(outside, 'data')
+  const outside = join(directory, 'outside.png')
+  await writeFile(outside, 'data')
   lark.mockResolvedValueOnce({ saved_path: outside })
   await expect(readAdmissionImage(agent, commands, source, text, 'img_source', directory, signal())).rejects.toThrow('outside')
-  for (const [name, bytes, error] of [['image.png', 101, 'byte limit'], ['image.svg', 4, 'supported']] as const) {
+  for (const [name, bytes, error] of [
+    ['image.png', 101, 'byte limit'],
+    ['image.svg', 4, 'supported'],
+  ] as const) {
     lark.mockImplementationOnce(async (_args, cwd) => {
-      const saved_path = join(cwd!, name); await writeFile(saved_path, Buffer.alloc(bytes)); return { saved_path }
+      const saved_path = join(cwd!, name)
+      await writeFile(saved_path, Buffer.alloc(bytes))
+      return { saved_path }
     })
     await expect(readAdmissionImage(agent, commands, source, text, 'img_source', directory, signal())).rejects.toThrow(error)
   }
