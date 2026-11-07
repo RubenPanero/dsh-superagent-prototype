@@ -18,10 +18,11 @@ it('delivers a follow-up to the worker and tells the main Session with a card, w
   const message = followup('2', '顺便把标题也改了', { parent_id: 'om_1' })
   h.runtime.receive(message)
   await h.runtime.idle()
-  expect(h.relays(sessionId)).toEqual([expect.objectContaining({ trigger_id: message.id, text: '顺便把标题也改了' })])
+  expect(h.relays(sessionId)).toEqual([expect.objectContaining({ trigger_id: message.id,
+    text: JSON.stringify({ kind: 'untrusted_trigger_text', text: '顺便把标题也改了' }) })])
   expect(notices(h)).toEqual([{ kind: 'follow_up', trigger_id: message.id, from: 'ou_alice', thread: THREAD, at: message.at,
-    text: '顺便把标题也改了',
-    replies_to: { trigger_id: ticket.origin.triggerId, preview: '@bot 修一下回归' },
+    text: JSON.stringify({ kind: 'untrusted_trigger_text', text: '顺便把标题也改了' }),
+    replies_to: { trigger_id: ticket.origin.triggerId, preview: JSON.stringify({ kind: 'untrusted_trigger_text', text: '@bot 修一下回归' }) },
     delivered_to: [{ ticket_id: ticket.id, title: ticket.title, state: 'working' }],
       note: expect.stringContaining('worker has it and decides') }])
   // No candidate, no Eval, no Decision: nothing waits on the main Session, and the Thread's queue stays free.
@@ -256,8 +257,9 @@ it('shows a candidate\'s message as its workers would read it, with the message 
   await h.runTool(sessionId, 'orchestrator_trigger_handback', { trigger_id: reply.id, reason: 'Another change.' })
   await h.runtime.pump(); await h.runtime.idle()
   const card = h.relays(h.runtime.masterId).find(item => item.kind === 'candidate' && item.trigger_id === reply.id)!
-  expect(card).toMatchObject({ from: 'ou_alice', text: long.slice(0, 600) + '…', chars: long.length, read: `trigger/${reply.id}`,
-    replies_to: { trigger_id: ticket.origin.triggerId, preview: '@bot 修一下回归' } })
+  const encoded = JSON.stringify({ kind: 'untrusted_trigger_text', text: long })
+  expect(card).toMatchObject({ from: 'ou_alice', text: encoded.slice(0, 600) + '…', chars: encoded.length, read: `trigger/${reply.id}`,
+    replies_to: { trigger_id: ticket.origin.triggerId, preview: JSON.stringify({ kind: 'untrusted_trigger_text', text: '@bot 修一下回归' }) } })
   expect(card).not.toHaveProperty('triggers')
 })
 
